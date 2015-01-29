@@ -35,8 +35,10 @@ import org.apache.hadoop.fs.BufferedFSInputStream;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.nfs.NfsFileType;
@@ -287,6 +289,9 @@ public class NFSv3FileSystem extends FileSystem {
   }
 
   private Path makeAbsolute(Path path) {
+    if(path == null) {
+        return null;
+    }
     if (path.isAbsolute() && !path.isAbsoluteAndSchemeAuthorityNull()) {
       return path;
     }
@@ -296,7 +301,7 @@ public class NFSv3FileSystem extends FileSystem {
 
   @Override
   public Path getHomeDirectory() {
-    Path homeDir = makeQualified(new Path("/"));
+    Path homeDir = makeQualified(new Path("/user/" + System.getProperty("user.name")));
     return homeDir;
   }
 
@@ -339,6 +344,13 @@ public class NFSv3FileSystem extends FileSystem {
   @Override
   public FSDataInputStream open(Path f, int bufferSize) throws IOException {
     f = makeAbsolute(f);
+    
+    // Directories cannot be opened for reading
+    FileStatus status = getFileStatus(f);
+    if(status != null && status.isDirectory()) {
+        throw new FileNotFoundException("Cannot open directory for reading");
+    }
+    
     FileHandle handle = getAndVerifyFileHandle(f);
     if (handle == null) {
       LOG.error("open: handle is undefined for file" + f.toUri().getPath());
@@ -390,10 +402,20 @@ public class NFSv3FileSystem extends FileSystem {
 
       handle = create(parentHandle, f.getName(), permission);
     } else {
-      if (overwrite != true) {
-        throw new IOException("File already exists: " + f);
+      FileStatus status = getFileStatus(f);
+      if(status != null) {
+          if(status.isDirectory()) {
+              throw new FileAlreadyExistsException("Path " + f + " is already a directory");
+          } else {
+            if(overwrite != true) {
+                throw new FileAlreadyExistsException("File already exists: " + f);
+            }
+            truncate(handle, 0);
+          }
       }
-      truncate(handle, 0);
+      else {
+          throw new IOException("Could not get status of file " + f);
+      }
     }
     return new FSDataOutputStream(new NFSBufferedOutputStream(configuration, handle, f, store,
         this.getWriteBlockSizeBits(), false), statistics);
@@ -442,6 +464,16 @@ public class NFSv3FileSystem extends FileSystem {
       return false;
     }
 
+    if(src.getParent() == null) {
+        LOG.warn("Root directory cannot be renamed");
+        return false;
+    }
+    
+    if(dst.getParent() == null) {
+        LOG.warn("Cannot rename directory to root");
+        return false;
+    }
+    
     FileHandle srcParentHandle = getAndVerifyFileHandle(src.getParent());
     FileHandle dstParentHandle = getAndVerifyFileHandle(dst.getParent());
 
@@ -463,7 +495,9 @@ public class NFSv3FileSystem extends FileSystem {
         LOG.warn("Trying to rename file to an existing directory");
         return false;
       } else if (srcStatus.isFile()) {
-        LOG.warn("Trying to rename over an existing file");
+        if(src.equals(dst)) {
+            return true;
+        }
         return false;
       } else {
         throw new IOException("Source is neither a file nor a directory");
@@ -489,6 +523,9 @@ public class NFSv3FileSystem extends FileSystem {
     }
 
     if (status != Nfs3Status.NFS3_OK) {
+        if(status == Nfs3Status.NFS3ERR_INVAL) {
+            return false;
+        }
       throw new IOException("rename error status=" + status);
     }
 
@@ -566,7 +603,7 @@ public class NFSv3FileSystem extends FileSystem {
   public boolean mkdirs(Path f, FsPermission permission) throws IOException {
     f = makeAbsolute(f);
 
-    List<String> dirs = new LinkedList<String>();
+    List<String> dirs = new LinkedList<>();
     Path path = Path.getPathWithoutSchemeAndAuthority(f);
     do {
       dirs.add(0, path.getName());
@@ -646,6 +683,12 @@ public class NFSv3FileSystem extends FileSystem {
 
   private Boolean rmdir(Path dir) throws IOException {
     int status;
+    
+    if(dir.isRoot()) {
+        LOG.warn("Cannot delete root directory");
+        return true;
+    }
+    
     String pathString = dir.toUri().getPath();
     FileHandle parentDirHandle = getAndVerifyFileHandle(dir.getParent());
     String name = dir.getName();
@@ -725,7 +768,7 @@ public class NFSv3FileSystem extends FileSystem {
     return paths;
   }
 
-  private void mkdir(FileHandle dir, String name, FsPermission permission) throws IOException {
+  private boolean mkdir(FileHandle dir, String name, FsPermission permission) throws IOException {
     int status;
 
     EnumSet<SetAttrField> updateFields = EnumSet.noneOf(SetAttrField.class);
@@ -745,11 +788,15 @@ public class NFSv3FileSystem extends FileSystem {
     if (status != Nfs3Status.NFS3_OK) {
       if (status == Nfs3Status.NFS3ERR_EXIST) {
         LOG.debug("NFSFileSystem mkdir: already exists for handle=" + dir + ", dir=" + name);
+        throw new FileAlreadyExistsException();
+      } else if(status == Nfs3Status.NFS3ERR_NOTDIR) {
+          LOG.debug("NFSFileSystem mkdir: parent is not a dir");
+          throw new ParentNotDirectoryException();
       } else {
         throw new IOException("NFSFileSystem mkdir error: status=" + status);
       }
     }
-
+    return true;
   }
 
   private FileHandle create(FileHandle dir, String name, FsPermission permission)
@@ -817,8 +864,13 @@ public class NFSv3FileSystem extends FileSystem {
   }
 
   private FileHandle getAndVerifyFileHandle(Path path) throws IOException {
-    path = makeAbsolute(path);
     int status;
+    
+    if(path == null) {
+        return null;
+    }
+    
+    path = makeAbsolute(path);
     Path FsPath = Path.getPathWithoutSchemeAndAuthority(path);
     FileHandle handle = null;
 

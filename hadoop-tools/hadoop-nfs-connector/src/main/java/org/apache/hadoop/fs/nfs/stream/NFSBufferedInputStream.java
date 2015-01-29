@@ -15,6 +15,7 @@
  */
 package org.apache.hadoop.fs.nfs.stream;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
@@ -116,7 +117,7 @@ public class NFSBufferedInputStream extends FSInputStream {
   @Override
   public synchronized void seek(long pos) throws IOException {
     if (pos > fileLength) {
-      throw new IOException("Cannot seek after EOF: pos=" + pos + ", fileLength=" + fileLength);
+      throw new EOFException("Cannot seek after EOF: pos=" + pos + ", fileLength=" + fileLength);
     }
     fileOffset = pos;
     prefetchBlockLimit = (long) (Math.min(fileLength, pos + this.splitSize) >> readBlockSizeBits);

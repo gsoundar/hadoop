@@ -151,7 +151,7 @@ public class NFSv3FileSystemStore extends RpcClient {
     // During testing, it bypasses Portmap and Mount and calls directly into NFS
     else {
       int mountPort = conf.getInt("fs.nfs.mount.port", uri.getPort());
-      String mountPath = conf.get("fs.nfs.mountdir", "/somepath");
+      String mountPath = conf.get("fs.nfs.mountdir", "/");
       MountClient mountClient = new MountClient(uri.getHost(), mountPort, conf);
       MountMNTResponse mountMNTResponse = mountClient.mnt(mountPath);
       rootfh = mountMNTResponse.getFilehandle();
